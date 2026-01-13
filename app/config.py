@@ -30,12 +30,18 @@ class Settings(BaseSettings):
     # ========== ComfyUI 配置 ==========
     COMFYUI_HOST: str = "127.0.0.1"
     COMFYUI_PORT: int = 8189
+    COMFYUI_WS_PORT: int = 8188  # ComfyUI WebSocket 端口
     COMFYUI_TIMEOUT: int = 999999
 
     @property
     def COMFYUI_BASE_URL(self) -> str:
         """获取 ComfyUI 基础 URL"""
         return f"http://{self.COMFYUI_HOST}:{self.COMFYUI_PORT}"
+
+    @property
+    def COMFYUI_WS_URL(self) -> str:
+        """获取 ComfyUI WebSocket URL"""
+        return f"ws://{self.COMFYUI_HOST}:{self.COMFYUI_WS_PORT}"
 
     # ========== 文件存储配置 ==========
     BASE_DIR: Path = Path(__file__).resolve().parent.parent

@@ -1,0 +1,16 @@
+name: test-api
+description: 为 FastAPI 项目生成 pytest 测试代码，包括 TestClient 集成测试、依赖注入覆盖、异常处理测试等
+author: Lathan
+parameters:
+  - name: scope
+    description: 测试范围（endpoint/router/global）
+    required: false
+    default: endpoint
+  - name: with_coverage
+    description: 是否生成测试覆盖率统计代码
+    required: false
+    default: "false"
+  - name: include_fixtures
+    description: 是否包含 pytest fixtures 配置
+    required: false
+    default: "true"

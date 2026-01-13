@@ -5,6 +5,7 @@ ComfyUI 客户端模块
 """
 
 import httpx
+import json
 from typing import Dict, Any, Optional, List
 
 from app.config import settings
@@ -24,6 +25,11 @@ class ComfyUIClient:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.post(f"{self.base_url}{path}", json=data)
                 response.raise_for_status()
+
+                # 处理空响应
+                if not response.content:
+                    return {}
+
                 return response.json()
 
         except httpx.ConnectError as e:
@@ -33,6 +39,10 @@ class ComfyUIClient:
         except httpx.HTTPStatusError as e:
             raise ComfyUIConnectionError(
                 f"HTTP 错误: {e.response.status_code}"
+            )
+        except json.JSONDecodeError as e:
+            raise ComfyUIConnectionError(
+                f"ComfyUI 返回无效 JSON: {str(e)}"
             )
 
     async def _get(self, path: str, params: Dict[str, Any] = None) -> Dict[str, Any]:
@@ -41,6 +51,11 @@ class ComfyUIClient:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.get(f"{self.base_url}{path}", params=params)
                 response.raise_for_status()
+
+                # 处理空响应
+                if not response.content:
+                    return {}
+
                 return response.json()
 
         except httpx.ConnectError as e:
@@ -51,11 +66,15 @@ class ComfyUIClient:
             raise ComfyUIConnectionError(
                 f"HTTP 错误: {e.response.status_code}"
             )
+        except json.JSONDecodeError as e:
+            raise ComfyUIConnectionError(
+                f"ComfyUI 返回无效 JSON: {str(e)}"
+            )
 
     async def submit_prompt(
-        self,
-        workflow: Dict[str, Any],
-        client_id: Optional[str] = None
+            self,
+            workflow: Dict[str, Any],
+            client_id: Optional[str] = None
     ) -> str:
         """
         提交工作流
@@ -96,15 +115,25 @@ class ComfyUIClient:
         """获取队列状态"""
         return await self._get("/queue")
 
-    async def clear_queue(self) -> Dict[str, Any]:
-        """清空队列"""
-        return await self._post("/queue", {"clear": True})
+    async def clear_queue(self, request_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        清空队列或删除指定项
+
+        Args:
+            request_data: 请求数据，支持:
+                - {"clear": true} 清空整个队列
+                - {"delete": ["id1", "id2"]} 删除指定项
+
+        Returns:
+            ComfyUI 响应（通常为空）
+        """
+        return await self._post("/queue", request_data)
 
     async def upload_image(
-        self,
-        image_data: bytes,
-        filename: str,
-        overwrite: bool = True
+            self,
+            image_data: bytes,
+            filename: str,
+            overwrite: bool = True
     ) -> Dict[str, Any]:
         """上传图片"""
         try:
@@ -123,10 +152,10 @@ class ComfyUIClient:
             raise ComfyUIConnectionError(f"上传失败: {str(e)}")
 
     async def download_image(
-        self,
-        filename: str,
-        subfolder: str = "",
-        img_type: str = "output"
+            self,
+            filename: str,
+            subfolder: str = "",
+            img_type: str = "output"
     ) -> bytes:
         """下载图片"""
         try:
