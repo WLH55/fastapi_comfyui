@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 
 from app.main import create_app
 from app.internal.comfyui import ComfyUIClient
+from app.exceptions import register_exception_handlers
 
 
 # ============ 应用 Fixtures ============
@@ -23,7 +24,7 @@ def app():
     """
     创建 FastAPI 测试应用实例
 
-    跳过 lifespan 事件
+    跳过 lifespan 事件但保留异常处理器
     """
     # 创建空 lifespan 来跳过初始化
     @asynccontextmanager
@@ -33,6 +34,9 @@ def app():
     # 创建应用并替换 lifespan
     app_instance = create_app()
     app_instance.router.lifespan_context = empty_lifespan
+
+    # 确保异常处理器被注册（在替换 lifespan 后重新注册）
+    register_exception_handlers(app_instance)
 
     yield app_instance
 
@@ -207,59 +211,3 @@ def valid_interrupt_request():
     有效的中断工作流请求
     """
     return {"prompt_id": "test-prompt-id-123"}
-
-
-# ============ 依赖覆盖 Helper ============
-
-
-@pytest.fixture
-def comfyui_client_override(app, mock_comfyui_client):
-    """
-    提供依赖覆盖的上下文管理器
-
-    用法:
-        with comfyui_client_override:
-            # 测试代码
-            response = client.get("/api/v1/queue/status")
-    """
-    from app.internal import comfyui as comfyui_module
-
-    original_client = comfyui_module.comfyui_client
-
-    class _OverrideContext:
-        def __enter__(self):
-            comfyui_module.comfyui_client = mock_comfyui_client
-            return mock_comfyui_client
-
-        def __exit__(self, *args):
-            comfyui_module.comfyui_client = original_client
-
-    return _OverrideContext()
-
-
-# ============ 异步事件循环 Fixture ============
-
-
-@pytest.fixture
-def event_loop():
-    """
-    创建事件循环用于异步测试
-    """
-    loop = asyncio.get_event_loop_policy().new_event_loop()
-    yield loop
-    loop.close()
-
-
-# ============ 参数化测试数据 ============
-
-
-@pytest.fixture(params=[
-    ("test-id-1", 200),
-    ("test-id-2", 200),
-    ("non-existent", 404),
-])
-def history_test_cases(request):
-    """
-    历史记录测试用例参数化
-    """
-    return request.param

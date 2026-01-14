@@ -54,7 +54,7 @@ class ResponseCode:
     FORBIDDEN = 403
     NOT_FOUND = 404
     CONFLICT = 409
-    VALIDATION_ERROR = 422
+    VALIDATION_ERROR = 400
 
     # 服务器错误
     INTERNAL_ERROR = 500

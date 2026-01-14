@@ -77,36 +77,41 @@ class TestScenariosCPUQuickly:
         with patch("app.routers.scenarios.comfyui_client", mock_comfyui_client):
             response = client.post("/api/v1/scenarios/cpu_quickly", json=request_data)
 
-            # Pydantic 验证失败，返回 422
-            assert response.status_code == 422
+            assert response.status_code == 400
 
     def test_cpu_quickly_template_not_found(self, client, mock_comfyui_client):
         """
         测试 workflow 模板文件不存在
+
+        验证点:
+        - FileNotFoundError 被全局异常处理器捕获
+        - 返回 500 错误码
         """
-        from app.internal.workflow_handlers import load_cpu_quickly_workflow
-
-        # 模拟 FileNotFoundError
-        load_cpu_quickly_workflow.side_effect = FileNotFoundError("模板文件不存在")
-
         request_data = {
             "prompt": "test",
             "negative_prompt": "",
             "input_image": "test.png"
         }
 
-        with patch("app.routers.scenarios.comfyui_client", mock_comfyui_client):
-            with patch("app.internal.workflow_handlers.load_cpu_quickly_workflow", load_cpu_quickly_workflow):
+        # 使用 patch 替换 load_cpu_quickly_workflow，使其抛出 FileNotFoundError
+        with patch("app.routers.scenarios.load_cpu_quickly_workflow") as mock_load:
+            mock_load.side_effect = FileNotFoundError("模板文件不存在")
+
+            with patch("app.routers.scenarios.comfyui_client", mock_comfyui_client):
                 response = client.post("/api/v1/scenarios/cpu_quickly", json=request_data)
 
-                assert response.status_code == 200
+                assert response.status_code == 500
                 result = response.json()
-                assert result["code"] == 404
-                assert "模板文件不存在" in result["message"]
+                assert result["code"] == 500
+                assert result["message"] == "服务器内部错误"
 
     def test_cpu_quickly_submit_exception(self, client, mock_comfyui_client):
         """
         测试提交工作流时发生异常
+
+        验证点:
+        - 全局异常处理器捕获 Exception
+        - 返回 500 错误码
         """
         mock_comfyui_client.submit_prompt.side_effect = Exception("提交失败")
 
@@ -119,10 +124,10 @@ class TestScenariosCPUQuickly:
         with patch("app.routers.scenarios.comfyui_client", mock_comfyui_client):
             response = client.post("/api/v1/scenarios/cpu_quickly", json=request_data)
 
-            assert response.status_code == 200
+            assert response.status_code == 500
             result = response.json()
             assert result["code"] == 500
-            assert "执行失败" in result["message"]
+            assert result["message"] == "服务器内部错误"
 
     @pytest.mark.parametrize("prompt,expected_valid", [
         ("a beautiful landscape", True),
@@ -255,6 +260,132 @@ class TestScenariosEdgeCases:
             t.join()
 
         assert all(status == 200 for status in results)
+
+
+class TestScenariosExceptions:
+    """场景接口异常测试"""
+
+    def test_cpu_quickly_connection_error(self, client, mock_comfyui_client):
+        """
+        测试 CPU Quickly 执行时连接错误
+
+        模拟 ComfyUIConnectionError 异常
+        """
+        from app.exceptions import ComfyUIConnectionError
+        from app.schemas import ResponseCode
+
+        mock_comfyui_client.submit_prompt.side_effect = ComfyUIConnectionError("无法连接到 ComfyUI")
+
+        request_data = {
+            "prompt": "test",
+            "negative_prompt": "",
+            "input_image": "test.png"
+        }
+
+        with patch("app.routers.scenarios.comfyui_client", mock_comfyui_client):
+            response = client.post("/api/v1/scenarios/cpu_quickly", json=request_data)
+
+            assert response.status_code == 200
+            result = response.json()
+            assert result["code"] == ResponseCode.ERROR_COMFYUI_CONNECTION
+            assert "无法连接" in result["message"]
+
+    def test_cpu_quickly_workflow_validation_error(self, client, mock_comfyui_client):
+        """
+        测试 CPU Quickly 工作流验证错误
+
+        模拟 WorkflowValidationError 异常
+        """
+        from app.exceptions import WorkflowValidationError
+        from app.schemas import ResponseCode
+
+        mock_comfyui_client.submit_prompt.side_effect = WorkflowValidationError("工作流节点配置错误")
+
+        request_data = {
+            "prompt": "test",
+            "negative_prompt": "",
+            "input_image": "test.png"
+        }
+
+        with patch("app.routers.scenarios.comfyui_client", mock_comfyui_client):
+            response = client.post("/api/v1/scenarios/cpu_quickly", json=request_data)
+
+            assert response.status_code == 200
+            result = response.json()
+            assert result["code"] == ResponseCode.ERROR_WORKFLOW_VALIDATION
+
+    def test_cpu_quickly_queue_error(self, client, mock_comfyui_client):
+        """
+        测试 CPU Quickly 队列操作错误
+
+        模拟 QueueOperationError 异常
+        """
+        from app.exceptions import QueueOperationError
+        from app.schemas import ResponseCode
+
+        mock_comfyui_client.submit_prompt.side_effect = QueueOperationError("队列已满")
+
+        request_data = {
+            "prompt": "test",
+            "negative_prompt": "",
+            "input_image": "test.png"
+        }
+
+        with patch("app.routers.scenarios.comfyui_client", mock_comfyui_client):
+            response = client.post("/api/v1/scenarios/cpu_quickly", json=request_data)
+
+            assert response.status_code == 200
+            result = response.json()
+            assert result["code"] == ResponseCode.ERROR_QUEUE_OPERATION
+
+    def test_cpu_quickly_file_operation_error(self, client, mock_comfyui_client):
+        """
+        测试 CPU Quickly 文件操作错误
+
+        模拟 FileOperationError 异常
+        """
+        from app.exceptions import FileOperationError
+        from app.schemas import ResponseCode
+
+        mock_comfyui_client.submit_prompt.side_effect = FileOperationError("无法读取图片文件")
+
+        request_data = {
+            "prompt": "test",
+            "negative_prompt": "",
+            "input_image": "test.png"
+        }
+
+        with patch("app.routers.scenarios.comfyui_client", mock_comfyui_client):
+            response = client.post("/api/v1/scenarios/cpu_quickly", json=request_data)
+
+            assert response.status_code == 200
+            result = response.json()
+            assert result["code"] == ResponseCode.ERROR_FILE_OPERATION
+
+    def test_cpu_quickly_image_not_found_error(self, client, mock_comfyui_client):
+        """
+        测试 CPU Quickly 图片未找到错误
+
+        模拟 ImageNotFoundError 异常
+        """
+        from app.exceptions import ImageNotFoundError
+        from app.schemas import ResponseCode
+
+        mock_comfyui_client.submit_prompt.side_effect = ImageNotFoundError("missing.png")
+
+        request_data = {
+            "prompt": "test",
+            "negative_prompt": "",
+            "input_image": "missing.png"
+        }
+
+        with patch("app.routers.scenarios.comfyui_client", mock_comfyui_client):
+            response = client.post("/api/v1/scenarios/cpu_quickly", json=request_data)
+
+            assert response.status_code == 200
+            result = response.json()
+            assert result["code"] == ResponseCode.ERROR_IMAGE_NOT_FOUND
+            assert "missing.png" in result["message"]
 
 
 class TestScenariosValidation:

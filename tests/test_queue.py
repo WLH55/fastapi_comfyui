@@ -95,7 +95,7 @@ class TestQueueStatus:
         with patch("app.routers.queue.comfyui_client", mock_comfyui_client):
             response = client.get("/api/v1/queue/status")
 
-            assert response.status_code == 200
+            assert response.status_code == 500
             data = response.json()
             assert data["code"] == ResponseCode.ERROR_COMFYUI_CONNECTION
             assert "不可用" in data["message"]
@@ -126,87 +126,174 @@ class TestQueueClear:
         """
         测试成功清空队列
         """
-        request_data = {"clear": true}
         mock_comfyui_client.clear_queue.return_value = {"detail": "Queue cleared"}
 
         with patch("app.routers.queue.comfyui_client", mock_comfyui_client):
-            response = client.post("/api/v1/queue/clear", json=request_data)
+            response = client.post("/api/v1/queue/clear")
 
             assert response.status_code == 200
             data = response.json()
             assert data["code"] == 200
             assert data["message"] == "队列已清空"
             assert "detail" in data["data"]
-            mock_comfyui_client.clear_queue.assert_called_once()
+            mock_comfyui_client.clear_queue.assert_called_once_with({"clear": True})
 
-    def test_clear_queue_not_executed(self, client, mock_comfyui_client):
+
+
+class TestQueueDelete:
+    """测试删除队列项接口 POST /api/v1/queue/delete"""
+
+    def test_delete_single_item(self, client, mock_comfyui_client):
         """
-        测试 clear=false 时不执行清空
+        测试删除单个队列项
+
+        验证点:
+        - 状态码为 200
+        - 返回成功消息
+        - 正确调用 clear_queue 方法
         """
-        request_data = {"clear": False}
+        mock_comfyui_client.clear_queue.return_value = {"detail": "Deleted"}
+
+        request_data = {"delete": ["prompt-id-1"]}
 
         with patch("app.routers.queue.comfyui_client", mock_comfyui_client):
-            response = client.post("/api/v1/queue/clear", json=request_data)
+            response = client.post("/api/v1/queue/delete", json=request_data)
 
             assert response.status_code == 200
             data = response.json()
-            assert data["code"] == 400  # BAD_REQUEST
-            assert "未执行清空" in data["message"]
-            mock_comfyui_client.clear_queue.assert_not_called()
+            assert data["code"] == 200
+            assert data["message"] == "['prompt-id-1']删除成功"
+            mock_comfyui_client.clear_queue.assert_called_once_with({"delete": ["prompt-id-1"]})
 
-    def test_clear_queue_without_clear_field(self, client, mock_comfyui_client):
+    def test_delete_multiple_items(self, client, mock_comfyui_client):
         """
-        测试不提供 clear 字段的请求
+        测试删除多个队列项
+
+        验证点:
+        - 支持批量删除
+        - 消息包含所有删除的 prompt_id
+        """
+        mock_comfyui_client.clear_queue.return_value = {"detail": "Deleted"}
+
+        request_data = {
+            "delete": ["prompt-1", "prompt-2", "prompt-3"]
+        }
+
+        with patch("app.routers.queue.comfyui_client", mock_comfyui_client):
+            response = client.post("/api/v1/queue/delete", json=request_data)
+
+            assert response.status_code == 200
+            data = response.json()
+            assert data["code"] == 200
+            assert "prompt-1" in data["message"]
+            assert "prompt-2" in data["message"]
+            assert "prompt-3" in data["message"]
+            mock_comfyui_client.clear_queue.assert_called_once_with({"delete": ["prompt-1", "prompt-2", "prompt-3"]})
+
+    def test_delete_empty_list(self, client, mock_comfyui_client):
+        """
+        测试删除空列表
+
+        验证点:
+        - 空列表是有效输入
+        - 仍然调用 clear_queue
+        """
+        mock_comfyui_client.clear_queue.return_value = {"detail": "Nothing to delete"}
+
+        request_data = {"delete": []}
+
+        with patch("app.routers.queue.comfyui_client", mock_comfyui_client):
+            response = client.post("/api/v1/queue/delete", json=request_data)
+
+            assert response.status_code == 200
+            mock_comfyui_client.clear_queue.assert_called_once_with({"delete": []})
+
+    def test_delete_missing_delete_field(self, client, mock_comfyui_client):
+        """
+        测试缺少 delete 字段
+
+        验证点:
+        - Pydantic 验证失败
+        - 返回 422 错误
         """
         request_data = {}
 
         with patch("app.routers.queue.comfyui_client", mock_comfyui_client):
-            response = client.post("/api/v1/queue/clear", json=request_data)
+            response = client.post("/api/v1/queue/delete", json=request_data)
 
-            assert response.status_code == 200
-            data = response.json()
-            assert data["code"] == 400
+            assert response.status_code == 400
             mock_comfyui_client.clear_queue.assert_not_called()
 
-    def test_clear_queue_exception(self, client, mock_comfyui_client):
+    def test_delete_invalid_delete_type(self, client, mock_comfyui_client):
         """
-        测试清空队列时发生异常
+        测试 delete 字段类型错误
+
+        验证点:
+        - delete 不是列表时验证失败
+        - 返回 422 错误
         """
-        mock_comfyui_client.clear_queue.side_effect = Exception("清空失败")
+        request_data = {"delete": "not-a-list"}
 
         with patch("app.routers.queue.comfyui_client", mock_comfyui_client):
-            response = client.post("/api/v1/queue/clear", json={"clear": True})
+            response = client.post("/api/v1/queue/delete", json=request_data)
 
-            assert response.status_code == 200
+            assert response.status_code == 400
+
+    def test_delete_connection_error(self, client, mock_comfyui_client):
+        """
+        测试删除时连接错误
+        """
+        from app.exceptions import ComfyUIConnectionError
+        from app.schemas import ResponseCode
+
+        mock_comfyui_client.clear_queue.side_effect = ComfyUIConnectionError("无法连接")
+
+        request_data = {"delete": ["prompt-1"]}
+
+        with patch("app.routers.queue.comfyui_client", mock_comfyui_client):
+            response = client.post("/api/v1/queue/delete", json=request_data)
+
+            assert response.status_code == 500
             data = response.json()
-            assert data["code"] == 500
-            assert "清空队列失败" in data["message"]
+            assert data["code"] == ResponseCode.ERROR_COMFYUI_CONNECTION
 
-    @pytest.mark.parametrize("clear_value,expected_code,should_call", [
-        (True, 200, True),
-        (False, 400, False),
-        ("true", 200, True),  # 字符串 "true" 会被评估为真值
-        (0, 400, False),
-        (1, 200, True),
+    def test_delete_queue_operation_error(self, client, mock_comfyui_client):
+        """
+        测试删除时队列操作错误
+        """
+        from app.exceptions import QueueOperationError
+        from app.schemas import ResponseCode
+
+        mock_comfyui_client.clear_queue.side_effect = QueueOperationError("删除失败")
+
+        request_data = {"delete": ["prompt-1"]}
+
+        with patch("app.routers.queue.comfyui_client", mock_comfyui_client):
+            response = client.post("/api/v1/queue/delete", json=request_data)
+
+            assert response.status_code == 500
+            data = response.json()
+            assert data["code"] == ResponseCode.ERROR_QUEUE_OPERATION
+
+    @pytest.mark.parametrize("prompt_ids,expected_count", [
+        (["p1"], 1),
+        (["p1", "p2", "p3"], 3),
+        ([], 0),
+        (["p" + str(i) for i in range(10)], 10),
     ])
-    def test_clear_queue_parametrized(self, client, mock_comfyui_client, clear_value, expected_code, should_call):
+    def test_delete_parametrized(self, client, mock_comfyui_client, prompt_ids, expected_count):
         """
-        参数化测试：不同 clear 值的行为
+        参数化测试：不同数量的删除项
         """
-        request_data = {"clear": clear_value}
-        mock_comfyui_client.clear_queue.return_value = {"detail": "Cleared"}
+        mock_comfyui_client.clear_queue.return_value = {"detail": "Deleted"}
+
+        request_data = {"delete": prompt_ids}
 
         with patch("app.routers.queue.comfyui_client", mock_comfyui_client):
-            response = client.post("/api/v1/queue/clear", json=request_data)
+            response = client.post("/api/v1/queue/delete", json=request_data)
 
             assert response.status_code == 200
-            data = response.json()
-            assert data["code"] == expected_code
-
-            if should_call:
-                mock_comfyui_client.clear_queue.assert_called_once()
-            else:
-                mock_comfyui_client.clear_queue.assert_not_called()
+            mock_comfyui_client.clear_queue.assert_called_once_with({"delete": prompt_ids})
 
 
 class TestQueueEdgeCases:
@@ -275,3 +362,64 @@ class TestQueueEdgeCases:
             assert response.status_code == 200
             data = response.json()
             assert data["data"]["queue_running"][0]["timestamp"] == future_timestamp
+
+    def test_queue_with_zero_timestamp(self, client, mock_comfyui_client):
+        """
+        测试队列数据中包含零时间戳
+        """
+        queue_data = {
+            "queue_running": [[1, "zero-timestamp", 0]],
+            "queue_pending": []
+        }
+        mock_comfyui_client.get_queue_status.return_value = queue_data
+
+        with patch("app.routers.queue.comfyui_client", mock_comfyui_client):
+            response = client.get("/api/v1/queue/status")
+
+            assert response.status_code == 200
+            data = response.json()
+            assert data["data"]["queue_running"][0]["timestamp"] == 0
+
+    def test_delete_with_special_prompt_ids(self, client, mock_comfyui_client):
+        """
+        测试删除包含特殊字符的 prompt_id
+        """
+        mock_comfyui_client.clear_queue.return_value = {"detail": "Deleted"}
+
+        request_data = {
+            "delete": ["prompt-with-特殊字符", "prompt/with/slashes", "prompt with spaces"]
+        }
+
+        with patch("app.routers.queue.comfyui_client", mock_comfyui_client):
+            response = client.post("/api/v1/queue/delete", json=request_data)
+
+            assert response.status_code == 200
+            mock_comfyui_client.clear_queue.assert_called_once()
+
+    def test_queue_response_data_structure(self, client, mock_comfyui_client):
+        """
+        测试队列响应数据结构
+
+        验证点:
+        - 返回的队列项包含所有必需字段
+        - 字段类型正确
+        """
+        queue_data = {
+            "queue_running": [[1, "running-1", 1234567890]],
+            "queue_pending": [[2, "pending-1", 1234567891]]
+        }
+        mock_comfyui_client.get_queue_status.return_value = queue_data
+
+        with patch("app.routers.queue.comfyui_client", mock_comfyui_client):
+            response = client.get("/api/v1/queue/status")
+
+            assert response.status_code == 200
+            data = response.json()["data"]
+
+            # 验证 queue_running 结构
+            running_item = data["queue_running"][0]
+            assert "prompt_id" in running_item
+            assert "number" in running_item
+            assert "timestamp" in running_item
+            assert isinstance(running_item["number"], int)
+            assert isinstance(running_item["timestamp"], int)

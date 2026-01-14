@@ -200,6 +200,126 @@ class TestWorkflowsInterrupt:
             assert "中断工作流失败" in data["message"]
 
 
+class TestWorkflowsExceptions:
+    """工作流接口异常测试"""
+
+    def test_submit_workflow_validation_error(self, client, mock_comfyui_client):
+        """
+        测试工作流验证错误
+
+        模拟 WorkflowValidationError 异常
+        """
+        from app.exceptions import WorkflowValidationError
+        from app.schemas import ResponseCode
+
+        mock_comfyui_client.submit_prompt.side_effect = WorkflowValidationError("工作流格式不正确")
+
+        with patch("app.routers.workflows.comfyui_client", mock_comfyui_client):
+            response = client.post("/api/v1/workflows/submit", json={"workflow": {}})
+
+            assert response.status_code == 500
+            data = response.json()
+            assert data["code"] == ResponseCode.ERROR_WORKFLOW_VALIDATION
+            assert "格式不正确" in data["message"]
+
+    def test_submit_workflow_queue_error(self, client, mock_comfyui_client):
+        """
+        测试提交工作流时队列错误
+
+        模拟 QueueOperationError 异常
+        """
+        from app.exceptions import QueueOperationError
+        from app.schemas import ResponseCode
+
+        mock_comfyui_client.submit_prompt.side_effect = QueueOperationError("队列已满")
+
+        with patch("app.routers.workflows.comfyui_client", mock_comfyui_client):
+            response = client.post("/api/v1/workflows/submit", json={"workflow": {}})
+
+            assert response.status_code == 500
+            data = response.json()
+            assert data["code"] == ResponseCode.ERROR_QUEUE_OPERATION
+
+    def test_submit_workflow_file_operation_error(self, client, mock_comfyui_client):
+        """
+        测试提交工作流时文件操作错误
+
+        模拟 FileOperationError 异常
+        """
+        from app.exceptions import FileOperationError
+        from app.schemas import ResponseCode
+
+        mock_comfyui_client.submit_prompt.side_effect = FileOperationError("无法保存工作流文件")
+
+        with patch("app.routers.workflows.comfyui_client", mock_comfyui_client):
+            response = client.post("/api/v1/workflows/submit", json={"workflow": {}})
+
+            assert response.status_code == 500
+            data = response.json()
+            assert data["code"] == ResponseCode.ERROR_FILE_OPERATION
+
+    def test_get_history_connection_error(self, client, mock_comfyui_client):
+        """
+        测试获取历史时连接错误
+        """
+        from app.exceptions import ComfyUIConnectionError
+        from app.schemas import ResponseCode
+
+        mock_comfyui_client.get_history.side_effect = ComfyUIConnectionError("无法连接")
+
+        with patch("app.routers.workflows.comfyui_client", mock_comfyui_client):
+            response = client.get("/api/v1/workflows/test-id/history")
+
+            assert response.status_code == 500
+            data = response.json()
+            assert data["code"] == ResponseCode.ERROR_COMFYUI_CONNECTION
+
+    def test_get_history_general_exception(self, client, mock_comfyui_client):
+        """
+        测试获取历史时通用异常
+        """
+        mock_comfyui_client.get_history.side_effect = Exception("获取历史失败")
+
+        with patch("app.routers.workflows.comfyui_client", mock_comfyui_client):
+            response = client.get("/api/v1/workflows/test-id/history")
+
+            assert response.status_code == 500
+            data = response.json()
+            assert data["code"] == 500
+
+    def test_interrupt_connection_error(self, client, mock_comfyui_client):
+        """
+        测试中断时连接错误
+        """
+        from app.exceptions import ComfyUIConnectionError
+        from app.schemas import ResponseCode
+
+        mock_comfyui_client.interrupt.side_effect = ComfyUIConnectionError("连接断开")
+
+        with patch("app.routers.workflows.comfyui_client", mock_comfyui_client):
+            response = client.post("/api/v1/workflows/interrupt", json={"prompt_id": "test"})
+
+            assert response.status_code == 500
+            data = response.json()
+            assert data["code"] == ResponseCode.ERROR_COMFYUI_CONNECTION
+
+    def test_interrupt_queue_error(self, client, mock_comfyui_client):
+        """
+        测试中断时队列操作错误
+        """
+        from app.exceptions import QueueOperationError
+        from app.schemas import ResponseCode
+
+        mock_comfyui_client.interrupt.side_effect = QueueOperationError("中断队列操作失败")
+
+        with patch("app.routers.workflows.comfyui_client", mock_comfyui_client):
+            response = client.post("/api/v1/workflows/interrupt", json={"prompt_id": "test"})
+
+            assert response.status_code == 500
+            data = response.json()
+            assert data["code"] == ResponseCode.ERROR_QUEUE_OPERATION
+
+
 class TestWorkflowsEdgeCases:
     """工作流接口边界情况测试"""
 
