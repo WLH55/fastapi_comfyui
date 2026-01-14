@@ -149,8 +149,7 @@ async def general_exception_handler(request: Request, exc: Exception) -> JSONRes
     Returns:
         统一格式的错误响应
     """
-    import traceback
-    traceback.print_exc()
+
 
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
