@@ -48,10 +48,12 @@ class Settings(BaseSettings):
     INPUT_DIR: Path = BASE_DIR / "input"
     OUTPUT_DIR: Path = BASE_DIR / "output"
 
-    # ========== WebSocket 配置 ==========
-    WS_PING_INTERVAL: int = 20
-    WS_PING_TIMEOUT: int = 20
-    WS_MAX_SIZE: int = 104857600  # 100MB
+
+
+    # ========== 签名验签配置 ==========
+    SIGNATURE_ENABLED: bool = True  # 签名验证总开关
+    SIGNATURE_PUBLIC_KEY: str = ""  # RSA 公钥（PEM 格式）
+    SIGNATURE_TIMESTAMP_TOLERANCE: int = 300  # 时间戳容忍度（秒），默认 5 分钟
 
     class Config:
         """Pydantic 配置"""

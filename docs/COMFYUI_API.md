@@ -443,6 +443,7 @@ import time
 
 COMFYUI_HOST = "http://127.0.0.1:8188"
 
+
 def submit_workflow(workflow, client_id="python_client"):
     """提交工作流并返回 prompt_id"""
     response = requests.post(
@@ -450,6 +451,7 @@ def submit_workflow(workflow, client_id="python_client"):
         json={"prompt": workflow, "client_id": client_id}
     )
     return response.json()["prompt_id"]
+
 
 def wait_for_completion(prompt_id, timeout=300):
     """等待工作流执行完成"""
@@ -477,6 +479,7 @@ def wait_for_completion(prompt_id, timeout=300):
 
         time.sleep(0.5)
 
+
 def get_generated_images(prompt_id):
     """从历史记录中提取生成的图片信息"""
     response = requests.get(f"{COMFYUI_HOST}/history/{prompt_id}")
@@ -499,6 +502,7 @@ def get_generated_images(prompt_id):
 
     return images
 
+
 def download_image(image_info, output_path="."):
     """下载生成的图片"""
     filename = image_info["filename"]
@@ -513,6 +517,7 @@ def download_image(image_info, output_path="."):
         f.write(response.content)
 
     return save_path
+
 
 # ========== 使用示例 ==========
 
@@ -574,7 +579,7 @@ print(f"生成了 {len(images)} 张图片")
 
 # 下载图片
 for img in images:
-    path = download_image(img, output_path="./output")
+    path = download_image(img, output_path="../output")
     print(f"已下载: {path}")
 ```
 

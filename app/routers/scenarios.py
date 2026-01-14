@@ -4,8 +4,9 @@
 为每个 workflow 提供专门的简化接口
 """
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 
+from app.dependencies import verify_signature
 from app.internal.comfyui import comfyui_client
 from app.internal.utils import apply_params_to_workflow
 from app.internal.workflow_handlers import load_cpu_quickly_workflow
@@ -27,7 +28,7 @@ class Img2ImgRequest(BaseModel):
 
 # ========== CPU Quickly Workflow 接口 ==========
 
-@router.post("/cpu_quickly", summary="CPU Quickly 图生图", response_model=ApiResponse)
+@router.post("/cpu_quickly", summary="CPU Quickly 图生图", response_model=ApiResponse,dependencies=[Depends(verify_signature)])
 async def cpu_quickly(request: Img2ImgRequest):
     """
     针对 cpu quickly.json workflow 的简化接口
