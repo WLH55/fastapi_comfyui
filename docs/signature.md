@@ -2,58 +2,59 @@
 
 ## 概述
 
-签名验签功能用于防止第三方违规调用接口和篡改请求参数。客户端使用 RSA 私钥对请求进行签名，服务端使用 RSA 公钥验证签名。
+签名验签功能用于防止第三方违规调用接口和篡改请求参数。采用**规范化签名字符串**方式，客户端使用 RSA 私钥对请求进行签名，服务端使用 RSA 公钥验证签名。
 
 ### 核心特性
 
 - **防篡改**：任何参数修改都会导致签名验证失败
-- **防重放**：通过时间戳验证，防止请求被截获后重复使用
+- **防重放**：通过时间戳 + Nonce 验证，防止请求被截获后重复使用
+- **Body Hash**：直接对请求体原始字节进行哈希，无需解析 JSON
 - **灵活启用**：支持全局开关和路由级可选启用
 - **标准算法**：使用 RSA-PSS + SHA-256 签名算法
 
 ## 实现架构
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                      签名验签流程                              │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│  客户端                                                       │
-│  ├─ 1. 构造请求参数（按字典序排序）                            │
-│  ├─ 2. 添加 timestamp（当前时间戳）                           │
-│  ├─ 3. 拼接待签名字符串                                      │
-│  ├─ 4. 用私钥 RSA-PSS 签名                                  │
-│  └─ 5. 将 signature、timestamp 通过 Query 参数传递           │
-│                      ↓                                       │
-│  服务端 (FastAPI)                                            │
-│  ├─ 1. verify_signature 依赖拦截请求                         │
-│  ├─ 2. 从 Query 获取 signature 和 timestamp                  │
-│  ├─ 3. 构造相同的签名字符串                                   │
-│  ├─ 4. 用公钥验证签名                                         │
-│  ├─ 5. 验证时间戳（防重放）                                   │
-│  └─ 6. 验证通过 → 继续处理，失败 → 返回 401                   │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                      签名验签流程                                      │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  客户端                                                              │
+│  ├─ 1. 生成随机 Nonce（32 位十六进制字符串）                          │
+│  ├─ 2. 获取当前时间戳 Timestamp                                     │
+│  ├─ 3. 计算 Body Hash（SHA256 哈希）                                │
+│  ├─ 4. 构造规范化字符串                                             │
+│  │     METHOD\nPATH\nQUERY\nBODY_HASH\nTIMESTAMP\nNONCE             │
+│  ├─ 5. 用私钥 RSA-PSS 签名                                         │
+│  └─ 6. 将签名信息通过 HTTP Header 传递                               │
+│                      ↓                                              │
+│  服务端 (FastAPI)                                                    │
+│  ├─ 1. verify_signature 依赖从 Header 读取签名参数                    │
+│  ├─ 2. X-Signature, X-Timestamp, X-Nonce                           │
+│  ├─ 3. 构造相同的规范化字符串                                        │
+│  ├─ 4. 用公钥验证签名                                               │
+│  ├─ 5. 验证时间戳（防重放）                                          │
+│  └─ 6. 验证通过 → 继续处理，失败 → 返回 401                          │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
 ## 签名算法
 
-### 签名字符串构造
+### 签名字符串构造（规范化字符串）
 
 ```
-签名字符串 = HTTP方法 + "\n" +
-             请求路径 + "\n" +
-             排序后的查询参数 + "\n" +
-             时间戳
+METHOD\nPATH\nQUERY\nBODY_HASH\nTIMESTAMP\nNONCE
 ```
 
-**示例**：
-```
-POST
-/api/v1/workflows/submit
-client_id=test_client&workflow=test_workflow
-1704614400
-```
+| 字段 | 说明 | 示例 |
+|------|------|------|
+| METHOD | HTTP 方法（大写） | POST |
+| PATH | 请求路径 | /api/v1/workflows/submit |
+| QUERY | URL 编码的查询参数（按字母序） | client_id=123&format=json |
+| BODY_HASH | 请求体的 SHA256 哈希值 | 9f86d081... |
+| TIMESTAMP | Unix 时间戳（秒） | 1704614400 |
+| NONCE | 随机字符串（防重放） | a8f3e4b2... |
 
 ### 签名流程
 
@@ -81,16 +82,6 @@ with open("private_key.pem", "w") as f:
 # 保存公钥（服务端使用）
 with open("public_key.pem", "w") as f:
     f.write(public_key_pem)
-```
-
-或使用 OpenSSL 命令行工具：
-
-```bash
-# 生成私钥
-openssl genrsa -out private_key.pem 2048
-
-# 提取公钥
-openssl rsa -in private_key.pem -pubout -out public_key.pem
 ```
 
 ### 第二步：配置服务端
@@ -138,6 +129,7 @@ async def submit_workflow(workflow: dict):
 ```python
 import time
 import requests
+import json
 from app.internal.signature import SignatureManager
 
 # 配置
@@ -147,28 +139,37 @@ MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC...
 -----END PRIVATE KEY-----"""
 
 # 请求参数
-params = {
-    "workflow": "test_workflow",
-    "client_id": "test_client_123"
-}
-
-# 生成时间戳
-timestamp = int(time.time())
+method = "POST"
+path = "/api/v1/workflows/submit"
+query_params = {"client_id": "123", "format": "json"}
+body = {"workflow": "test", "steps": 20}
+body_bytes = json.dumps(body).encode("utf-8")
 
 # 生成签名
-signature = SignatureManager.generate_signature(
-    method="POST",
-    path="/api/v1/workflows/submit",
-    params=params,
-    timestamp=timestamp,
+sig_result = SignatureManager.generate_signature(
+    method=method,
+    path=path,
+    query_params=query_params,
+    body_bytes=body_bytes,
     private_key_pem=PRIVATE_KEY_PEM
 )
 
-# 构造请求 URL（将签名和时间戳添加到 Query 参数）
-url = f"{API_URL}/api/v1/workflows/submit?timestamp={timestamp}&signature={signature}"
+# 构造请求头
+headers = {
+    "X-Signature": sig_result["signature"],
+    "X-Timestamp": sig_result["timestamp"],
+    "X-Nonce": sig_result["nonce"],
+    "Content-Type": "application/json"
+}
 
 # 发送请求
-response = requests.post(url, json=params)
+url = f"{API_URL}{path}"
+response = requests.post(
+    url,
+    params=query_params,
+    data=body_bytes,
+    headers=headers
+)
 
 # 处理响应
 if response.status_code == 200:
@@ -190,45 +191,70 @@ const PRIVATE_KEY = `-----BEGIN PRIVATE KEY-----
 MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC...
 -----END PRIVATE KEY-----`;
 
-// 生成签名
-function generateSignature(method, path, params, timestamp) {
-    // 过滤签名相关参数并排序
-    const filteredParams = Object.entries(params)
-        .filter(([k]) => !['signature', 'timestamp'].includes(k))
-        .sort((a, b) => a[0].localeCompare(b[0]))
-        .map(([k, v]) => `${k}=${v}`)
+// 生成随机 Nonce
+function generateNonce() {
+    return crypto.randomBytes(16).toString('hex');
+}
+
+// 计算 Body Hash
+function calculateBodyHash(body) {
+    return body
+        ? crypto.createHash('sha256').update(body).digest('hex')
+        : '';
+}
+
+// 构造规范化字符串
+function buildCanonicalString(method, path, query, bodyHash, timestamp, nonce) {
+    const sortedQuery = Object.keys(query)
+        .sort()
+        .map(k => `${k}=${query[k]}`)
         .join('&');
 
-    // 构造签名字符串
-    const signString = `${method}\n${path}\n${filteredParams}\n${timestamp}`;
+    return `${method.toUpperCase()}\n${path}\n${sortedQuery}\n${bodyHash}\n${timestamp}\n${nonce}`;
+}
 
-    // RSA-PSS 签名
+// 生成签名
+function generateSignature(canonicalString, privateKey) {
     const sign = crypto.createSign('SHA256');
-    sign.update(signString);
+    sign.update(canonicalString);
     sign.end();
 
     const signature = sign.sign({
-        key: PRIVATE_KEY,
+        key: privateKey,
         padding: crypto.constants.RSA_PKCS1_PSS_PADDING
     });
 
-    // Base64 编码
     return signature.toString('base64');
 }
 
 // 发送请求
 async function submitWorkflow() {
-    const params = {
-        workflow: 'test_workflow',
-        client_id: 'test_client_123'
-    };
+    const method = 'POST';
+    const path = '/api/v1/workflows/submit';
+    const query = { client_id: '123' };
+    const body = JSON.stringify({ workflow: 'test', steps: 20 });
+    const bodyHash = calculateBodyHash(body);
     const timestamp = Math.floor(Date.now() / 1000);
-    const signature = generateSignature('POST', '/api/v1/workflows/submit', params, timestamp);
+    const nonce = generateNonce();
 
-    const url = `${API_URL}/api/v1/workflows/submit?timestamp=${timestamp}&signature=${encodeURIComponent(signature)}`;
+    // 构造规范化字符串并签名
+    const canonicalString = buildCanonicalString(
+        method, path, query, bodyHash, timestamp, nonce
+    );
+    const signature = generateSignature(canonicalString, PRIVATE_KEY);
 
+    // 发送请求
+    const url = `${API_URL}${path}`;
     try {
-        const response = await axios.post(url, params);
+        const response = await axios.post(url, body, {
+            params: query,
+            headers: {
+                'X-Signature': signature,
+                'X-Timestamp': timestamp.toString(),
+                'X-Nonce': nonce,
+                'Content-Type': 'application/json'
+            }
+        });
         console.log('请求成功:', response.data);
     } catch (error) {
         console.error('请求失败:', error.response?.data || error.message);
@@ -245,24 +271,37 @@ submitWorkflow();
 
 # 配置
 API_URL="http://localhost:8000"
+PRIVATE_KEY_FILE="private_key.pem"
 TIMESTAMP=$(date +%s)
+NONCE=$(cat /dev/urandom | tr -dc 'a-f0-9' | fold -w 32 | head -n 1)
 
 # 请求参数
-PARAMS="client_id=test_client_123&workflow=test_workflow"
+METHOD="POST"
+PATH="/api/v1/workflows/submit"
+QUERY="client_id=123&format=json"
+BODY='{"workflow":"test","steps":20}'
+
+# 计算 Body Hash
+BODY_HASH=$(echo -n "$BODY" | sha256sum | cut -d' ' -f1)
 
 # 构造签名字符串
 SIGN_STRING="POST
-/api/v1/workflows/submit
-${PARAMS}
-${TIMESTAMP}"
+${PATH}
+${QUERY}
+${BODY_HASH}
+${TIMESTAMP}
+${NONCE}"
 
-# 生成签名（需要先准备好私钥文件）
-SIGNATURE=$(echo -n "$SIGN_STRING" | openssl dgst -sha256 -sign private_key.pem -pkeyopt rsa_padding_mode:pss | base64)
+# 生成签名
+SIGNATURE=$(echo -n "$SIGN_STRING" | openssl dgst -sha256 -sign "$PRIVATE_KEY_FILE" -pkeyopt rsa_padding_mode:pss | base64)
 
 # 发送请求
-curl -X POST "${API_URL}/api/v1/workflows/submit?timestamp=${TIMESTAMP}&signature=$(echo -n "$SIGNATURE" | jq -sRr @uri)" \
+curl -X "${API_URL}${PATH}?${QUERY}" \
+  -H "X-Signature: ${SIGNATURE}" \
+  -H "X-Timestamp: ${TIMESTAMP}" \
+  -H "X-Nonce: ${NONCE}" \
   -H "Content-Type: application/json" \
-  -d '{"workflow": "test_workflow", "client_id": "test_client_123"}'
+  -d "$BODY"
 ```
 
 ## API 说明
@@ -287,21 +326,31 @@ SignatureManager.generate_rsa_keypair(key_size: int = 2048) -> tuple[str, str]
 SignatureManager.generate_signature(
     method: str,
     path: str,
-    params: dict,
-    timestamp: int,
-    private_key_pem: str
-) -> str
+    query_params: Optional[Dict[str, Any]] = None,
+    body_bytes: Optional[bytes] = None,
+    timestamp: Optional[int] = None,
+    nonce: Optional[str] = None,
+    private_key_pem: str = ""
+) -> Dict[str, str]
 ```
 
 **参数**：
-- `method`: HTTP 方法（GET、POST、PUT、DELETE 等）
-- `path`: 请求路径（不含域名，如 `/api/v1/workflows/submit`）
-- `params`: 请求参数字典
-- `timestamp`: Unix 时间戳（秒）
+- `method`: HTTP 方法
+- `path`: 请求路径
+- `query_params`: Query 参数字典（可选）
+- `body_bytes`: 请求体的原始字节（可选）
+- `timestamp`: Unix 时间戳（秒），不传则自动生成
+- `nonce`: 随机字符串，不传则自动生成
 - `private_key_pem`: PEM 格式的私钥
 
 **返回**：
-- Base64 编码的签名字符串
+```python
+{
+    "signature": "Base64 编码的签名字符串",
+    "timestamp": "Unix 时间戳",
+    "nonce": "随机字符串"
+}
+```
 
 #### 验证签名
 
@@ -309,20 +358,24 @@ SignatureManager.generate_signature(
 SignatureManager.verify_signature(
     method: str,
     path: str,
-    params: dict,
-    signature: str,
-    public_key_pem: str,
-    timestamp: int = None
+    query_params: Optional[Dict[str, Any]] = None,
+    body_bytes: Optional[bytes] = None,
+    signature: str = "",
+    timestamp: str = "",
+    nonce: str = "",
+    public_key_pem: str = ""
 ) -> bool
 ```
 
 **参数**：
 - `method`: HTTP 方法
 - `path`: 请求路径
-- `params`: 请求参数字典
+- `query_params`: Query 参数字典（可选）
+- `body_bytes`: 请求体的原始字节（可选）
 - `signature`: 待验证的签名字符串
+- `timestamp`: Unix 时间戳字符串
+- `nonce`: 随机字符串
 - `public_key_pem`: PEM 格式的公钥
-- `timestamp`: Unix 时间戳（可选）
 
 **返回**：
 - 验证成功返回 `True`，失败抛出 `SignatureException`
@@ -345,8 +398,9 @@ SignatureManager.is_timestamp_valid(timestamp: int, tolerance: int = 300) -> boo
 ```python
 async def verify_signature(
     request: Request,
-    signature: str = Query(...),
-    timestamp: int = Query(...)
+    x_signature: str = Header(...),
+    x_timestamp: str = Header(...),
+    x_nonce: str = Header(...)
 ) -> None
 ```
 
@@ -363,7 +417,7 @@ async def your_endpoint():
 
 | HTTP 状态码 | 说明 |
 |------------|------|
-| 401 | 签名验证失败或时间戳过期 |
+| 401 | 签名验证失败、时间戳过期或参数缺失 |
 | 500 | 服务器签名配置错误（公钥未配置） |
 
 ### 常见错误
@@ -376,9 +430,9 @@ async def your_endpoint():
 - 使用了错误的私钥
 
 **解决**：
-- 检查签名字符串构造是否正确
+- 检查规范化字符串构造是否正确
 - 确认参数顺序（字典序）
-- 验证私钥是否正确
+- 验证 Body Hash 是否正确
 
 #### 2. 时间戳过期
 
@@ -407,85 +461,46 @@ async def your_endpoint():
 3. **HTTPS**：生产环境必须使用 HTTPS，防止中间人攻击
 4. **时间同步**：确保客户端和服务器时间同步（建议使用 NTP）
 5. **容忍度设置**：根据网络情况合理设置时间戳容忍度
+6. **Nonce 随机性**：每次请求都使用新的 Nonce，防止重放攻击
 
-## 完整示例
+## 签名流程详解
 
-### 服务端代码
+### 1. 客户端签名生成
 
-```python
-# app/routers/protected.py
-from fastapi import APIRouter, Depends
-from app.dependencies import verify_signature
-from app.schemas import ApiResponse
+```
+原始请求：
+POST /api/v1/workflows/submit?client_id=123&format=json
+Body: {"workflow": "test", "steps": 20}
 
-router = APIRouter(prefix="/protected", tags=["受保护接口"])
-
-@router.post("/submit", dependencies=[Depends(verify_signature)])
-async def protected_submit(data: dict):
-    """需要签名验证的接口"""
-    return ApiResponse.success(data={"result": "success", "received": data})
+步骤：
+1. 生成 Nonce: a8f3e4b2c1d6e7f8...
+2. 获取时间戳: 1704614400
+3. 计算 Body Hash: 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
+4. 构造规范化字符串:
+   POST
+   /api/v1/workflows/submit
+   client_id=123&format=json
+   9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
+   1704614400
+   a8f3e4b2c1d6e7f8...
+5. RSA 签名并 Base64 编码
+6. 放入 Header:
+   X-Signature: ABc123...
+   X-Timestamp: 1704614400
+   X-Nonce: a8f3e4b2...
 ```
 
-### 客户端代码
+### 2. 服务端签名验证
 
-```python
-# client_example.py
-import time
-import requests
-from app.internal.signature import SignatureManager
-
-class APIClient:
-    def __init__(self, base_url: str, private_key: str):
-        self.base_url = base_url
-        self.private_key = private_key
-
-    def request(self, method: str, path: str, params: dict = None, json_data: dict = None):
-        """发送带签名的请求"""
-        # 合并参数
-        all_params = {}
-        if params:
-            all_params.update(params)
-        if json_data:
-            all_params.update(json_data)
-
-        # 生成签名
-        timestamp = int(time.time())
-        signature = SignatureManager.generate_signature(
-            method=method,
-            path=path,
-            params=all_params,
-            timestamp=timestamp,
-            private_key_pem=self.private_key
-        )
-
-        # 构造 URL
-        url = f"{self.base_url}{path}?timestamp={timestamp}&signature={signature}"
-
-        # 发送请求
-        if method.upper() == "GET":
-            response = requests.get(url, params=params)
-        else:
-            response = requests.post(url, params=params, json=json_data)
-
-        return response
-
-# 使用示例
-if __name__ == "__main__":
-    # 配置
-    BASE_URL = "http://localhost:8000"
-    PRIVATE_KEY = open("private_key.pem").read()
-
-    # 创建客户端
-    client = APIClient(BASE_URL, PRIVATE_KEY)
-
-    # 发送请求
-    response = client.request(
-        method="POST",
-        path="/api/v1/protected/submit",
-        json_data={"message": "Hello, API!"}
-    )
-
-    print("响应:", response.json())
+```
+收到请求后：
+1. 从 Header 读取 X-Signature, X-Timestamp, X-Nonce
+2. 获取 Method, Path, Query, Body
+3. 计算 Body Hash（与客户端相同方式）
+4. 构造相同的规范化字符串
+5. 用公钥验证签名
+6. 检查时间戳是否在容忍范围内
+7. 全部通过则放行，否则返回 401
 ```
 
 ## 文件结构
@@ -498,8 +513,23 @@ fastapi_comfyui/
 │   ├── dependencies.py            # 签名验证依赖
 │   └── config.py                  # 签名相关配置
 ├── tests/
-│   └── test_signature.py          # 单元测试
+│   └── test_signature.py          # 单元测试（25 个测试用例）
 ├── .env                           # 环境配置
 └── docs/
     └── signature.md               # 本文档
 ```
+
+## 版本变更
+
+### v2（当前版本）
+
+- 使用 Header 传递签名参数（X-Signature, X-Timestamp, X-Nonce）
+- 引入 Nonce 防重放机制
+- 使用 Body Hash 代替解析 JSON
+- 规范化字符串格式：METHOD\nPATH\nQUERY\nBODY_HASH\nTIMESTAMP\nNONCE
+
+### v1（已废弃）
+
+- 使用 Query 参数传递签名
+- 无 Nonce 机制
+- 需要解析 JSON 参数
