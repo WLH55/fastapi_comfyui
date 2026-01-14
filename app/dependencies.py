@@ -4,7 +4,7 @@
 包含签名验证等 FastAPI 依赖注入函数
 """
 
-from fastapi import Request, Query, HTTPException, status
+from fastapi import Request, Header, HTTPException, status
 
 from app.config import settings
 from app.internal.signature import SignatureManager, SignatureException
@@ -12,18 +12,25 @@ from app.internal.signature import SignatureManager, SignatureException
 
 async def verify_signature(
     request: Request,
-    signature: str = Query(..., description="RSA 签名字符串"),
-    timestamp: int = Query(..., description="请求时间戳（秒）")
+    x_signature: str = Header(..., description="RSA 签名字符串"),
+    x_timestamp: str = Header(..., description="请求时间戳（秒）"),
+    x_nonce: str = Header(..., description="随机字符串")
 ) -> None:
     """
     签名验证依赖
 
-    验证请求签名的有效性，防止参数篡改和重放攻击
+    从 HTTP Header 中读取签名参数并验证，防止参数篡改和重放攻击
+
+    Header 参数：
+        X-Signature: Base64 编码的 RSA 签名
+        X-Timestamp: Unix 时间戳（秒）
+        X-Nonce: 随机字符串（防止重放）
 
     Args:
         request: FastAPI 请求对象
-        signature: Query 参数中的签名字符串
-        timestamp: Query 参数中的时间戳
+        x_signature: Header 中的签名字符串
+        x_timestamp: Header 中的时间戳
+        x_nonce: Header 中的随机字符串
 
     Raises:
         HTTPException: 签名验证失败时抛出 401 错误
@@ -51,41 +58,36 @@ async def verify_signature(
         method = request.method
         path = request.url.path
 
-        # 获取所有请求参数（Query + FormData + JSON）
-        params = {}
+        # 获取 Query 参数
+        query_params = dict(request.query_params)
 
-        # Query 参数
-        params.update(request.query_params)
-
-        # 处理 FormData/Body 参数
-        content_type = request.headers.get("content-type", "")
-
-        if "application/x-www-form-urlencoded" in content_type:
-            # Form 数据
-            form_data = await request.form()
-            params.update(dict(form_data))
-        elif "application/json" in content_type:
-            # JSON 数据（签名验证时需要原始 JSON）
-            # 注意：由于 request.body() 只能读取一次，需要特殊处理
-            # 这里我们使用客户端应该传递的参数方式
-            # 对于 JSON 请求，客户端需要将参数也放在 Query 中或使用 FormData
-            # 或者我们使用 middleware 在请求到达前缓存 body
-            pass
+        # 获取请求体原始字节
+        body_bytes = await request.body()
 
         # 执行签名验证
         SignatureManager.verify_signature(
             method=method,
             path=path,
-            params=params,
-            signature=signature,
-            public_key_pem=settings.SIGNATURE_PUBLIC_KEY,
-            timestamp=timestamp
+            query_params=query_params,
+            body_bytes=body_bytes,
+            signature=x_signature,
+            timestamp=x_timestamp,
+            nonce=x_nonce,
+            public_key_pem=settings.SIGNATURE_PUBLIC_KEY
         )
 
         # 验证时间戳（防重放攻击）
         if settings.SIGNATURE_TIMESTAMP_TOLERANCE > 0:
+            try:
+                timestamp_int = int(x_timestamp)
+            except ValueError:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="时间戳格式无效"
+                )
+
             if not SignatureManager.is_timestamp_valid(
-                timestamp,
+                timestamp_int,
                 settings.SIGNATURE_TIMESTAMP_TOLERANCE
             ):
                 raise HTTPException(

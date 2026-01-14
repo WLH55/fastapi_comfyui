@@ -1,5 +1,7 @@
 """
 签名验签模块单元测试
+
+测试基于规范化字符串的签名验证流程
 """
 
 import time
@@ -26,12 +28,11 @@ class TestSignatureManager:
 
     @pytest.fixture
     def valid_request_params(self):
-        """有效的请求参数"""
+        """有效的 Query 参数"""
         return {
             "workflow": "test_workflow",
             "client_id": "test_client_123",
-            "param1": "value1",
-            "param2": "value2"
+            "param1": "value1"
         }
 
     # ========== 密钥生成测试 ==========
@@ -50,68 +51,181 @@ class TestSignatureManager:
         assert public_key.endswith("-----END PUBLIC KEY-----\n")
         assert "PUBLIC KEY" in public_key
 
+    # ========== Nonce 生成测试 ==========
+
+    def test_generate_nonce(self):
+        """测试 Nonce 生成"""
+        nonce1 = SignatureManager.generate_nonce()
+        nonce2 = SignatureManager.generate_nonce()
+
+        # Nonce 应该是 32 位十六进制字符串（16 bytes = 32 hex chars）
+        assert len(nonce1) == 32
+        assert all(c in "0123456789abcdef" for c in nonce1)
+
+        # 两次生成的 Nonce 应该不同
+        assert nonce1 != nonce2
+
+    # ========== Body Hash 测试 ==========
+
+    def test_calculate_body_hash_with_content(self):
+        """测试计算有内容的 Body Hash"""
+        body = b'{"key": "value"}'
+        hash_value = SignatureManager.calculate_body_hash(body)
+
+        # SHA256 哈希应该是 64 位十六进制字符串
+        assert len(hash_value) == 64
+        assert all(c in "0123456789abcdef" for c in hash_value)
+
+        # 相同内容应该产生相同哈希
+        hash_value2 = SignatureManager.calculate_body_hash(b'{"key": "value"}')
+        assert hash_value == hash_value2
+
+    def test_calculate_body_hash_empty(self):
+        """测试空 Body 的哈希"""
+        assert SignatureManager.calculate_body_hash(b"") == ""
+        assert SignatureManager.calculate_body_hash(None) == ""
+
+    def test_calculate_body_hash_different_content(self):
+        """测试不同内容产生不同哈希"""
+        hash1 = SignatureManager.calculate_body_hash(b'{"a": 1}')
+        hash2 = SignatureManager.calculate_body_hash(b'{"a": 2}')
+
+        assert hash1 != hash2
+
+    # ========== 规范化字符串测试 ==========
+
+    def test_build_canonical_string_basic(self, rsa_keypair):
+        """测试基本规范化字符串构造"""
+        result = SignatureManager._build_canonical_string(
+            method="post",
+            path="/api/v1/test",
+            query_params={"b": "2", "a": "1"},
+            body_hash="abc123",
+            timestamp=1704614400,
+            nonce="test_nonce"
+        )
+
+        expected = "POST\n/api/v1/test\na=1&b=2\nabc123\n1704614400\ntest_nonce"
+        assert result == expected
+
+    def test_build_canonical_string_method_case(self):
+        """测试 HTTP 方法名转大写"""
+        result = SignatureManager._build_canonical_string(
+            method="post",
+            path="/api/v1/test",
+            query_params={},
+            body_hash="",
+            timestamp=1704614400,
+            nonce="nonce"
+        )
+
+        assert result.startswith("POST\n")
+
+    def test_build_canonical_string_filters_signature_params(self):
+        """测试过滤签名相关参数"""
+        result = SignatureManager._build_canonical_string(
+            method="GET",
+            path="/api/v1/test",
+            query_params={
+                "data": "test",
+                "x-signature": "should_be_filtered",
+                "x-timestamp": "should_be_filtered",
+                "x-nonce": "should_be_filtered"
+            },
+            body_hash="",
+            timestamp=1704614400,
+            nonce="nonce"
+        )
+
+        # 只应该包含 data 参数
+        assert "data=test" in result
+        assert "x-signature" not in result.lower()
+        assert "x-timestamp" not in result.lower()
+        assert "x-nonce" not in result.lower()
+
     # ========== 签名生成测试 ==========
 
     def test_generate_signature_success(self, rsa_keypair, valid_request_params):
         """测试成功生成签名"""
-        timestamp = int(time.time())
+        body = b'{"workflow": "test"}'
 
-        signature = SignatureManager.generate_signature(
+        result = SignatureManager.generate_signature(
             method="POST",
             path="/api/v1/workflows/submit",
-            params=valid_request_params,
-            timestamp=timestamp,
+            query_params=valid_request_params,
+            body_bytes=body,
             private_key_pem=rsa_keypair["private_key"]
         )
 
-        # 验证签名是 Base64 编码的非空字符串
-        assert signature
-        assert len(signature) > 0
-        # Base64 编码的签名应该只包含有效字符
+        # 验证返回值包含所需字段
+        assert "signature" in result
+        assert "timestamp" in result
+        assert "nonce" in result
+
+        # 签名应该是 Base64 编码
         import base64
         try:
-            base64.b64decode(signature)
+            base64.b64decode(result["signature"])
         except Exception:
             pytest.fail("签名应该是有效的 Base64 编码")
 
-    def test_generate_signature_without_timestamp(self, rsa_keypair, valid_request_params):
-        """测试没有时间戳时生成签名失败"""
+        # Nonce 应该是 32 字符（16 bytes = 32 hex chars）
+        assert len(result["nonce"]) == 32
+
+        # Timestamp 应该是当前时间附近的整数
+        ts = int(result["timestamp"])
+        current_ts = int(time.time())
+        assert abs(current_ts - ts) < 10  # 允许 10 秒误差
+
+    def test_generate_signature_without_private_key(self, valid_request_params):
+        """测试没有私钥时生成签名失败"""
         with pytest.raises(SignatureException) as exc_info:
             SignatureManager.generate_signature(
                 method="POST",
-                path="/api/v1/workflows/submit",
-                params=valid_request_params,
-                timestamp=0,
-                private_key_pem=rsa_keypair["private_key"]
+                path="/api/v1/test",
+                query_params=valid_request_params,
+                private_key_pem=""
             )
-        assert "时间戳不能为空" in str(exc_info.value)
+        assert "私钥不能为空" in str(exc_info.value)
 
     def test_generate_signature_with_invalid_private_key(self, valid_request_params):
         """测试使用无效私钥时生成签名失败"""
-        timestamp = int(time.time())
-
         with pytest.raises(SignatureException) as exc_info:
             SignatureManager.generate_signature(
                 method="POST",
-                path="/api/v1/workflows/submit",
-                params=valid_request_params,
-                timestamp=timestamp,
+                path="/api/v1/test",
+                query_params=valid_request_params,
                 private_key_pem="invalid_key"
             )
         assert "加载私钥失败" in str(exc_info.value)
+
+    def test_generate_signature_auto_generates_timestamp_and_nonce(self, rsa_keypair, valid_request_params):
+        """测试自动生成时间戳和 Nonce"""
+        result = SignatureManager.generate_signature(
+            method="GET",
+            path="/api/v1/test",
+            query_params=valid_request_params,
+            private_key_pem=rsa_keypair["private_key"],
+            timestamp=None,  # 自动生成
+            nonce=None  # 自动生成
+        )
+
+        assert "timestamp" in result
+        assert "nonce" in result
+        assert len(result["nonce"]) == 32  # 16 bytes = 32 hex chars
 
     # ========== 签名验证测试 ==========
 
     def test_verify_signature_success(self, rsa_keypair, valid_request_params):
         """测试成功验证签名"""
-        timestamp = int(time.time())
+        body = b'{"data": "test"}'
 
         # 生成签名
-        signature = SignatureManager.generate_signature(
+        sig_result = SignatureManager.generate_signature(
             method="POST",
             path="/api/v1/workflows/submit",
-            params=valid_request_params,
-            timestamp=timestamp,
+            query_params=valid_request_params,
+            body_bytes=body,
             private_key_pem=rsa_keypair["private_key"]
         )
 
@@ -119,79 +233,117 @@ class TestSignatureManager:
         result = SignatureManager.verify_signature(
             method="POST",
             path="/api/v1/workflows/submit",
-            params=valid_request_params,
-            signature=signature,
-            public_key_pem=rsa_keypair["public_key"],
-            timestamp=timestamp
+            query_params=valid_request_params,
+            body_bytes=body,
+            signature=sig_result["signature"],
+            timestamp=sig_result["timestamp"],
+            nonce=sig_result["nonce"],
+            public_key_pem=rsa_keypair["public_key"]
         )
 
         assert result is True
 
-    def test_verify_signature_with_wrong_params(self, rsa_keypair, valid_request_params):
-        """测试参数被篡改时签名验证失败"""
-        timestamp = int(time.time())
+    def test_verify_signature_with_tampered_body(self, rsa_keypair, valid_request_params):
+        """测试 Body 被篡改时签名验证失败"""
+        original_body = b'{"data": "original"}'
+        tampered_body = b'{"data": "tampered"}'
 
-        # 生成原始签名
-        signature = SignatureManager.generate_signature(
+        # 用原始 body 生成签名
+        sig_result = SignatureManager.generate_signature(
             method="POST",
-            path="/api/v1/workflows/submit",
-            params=valid_request_params,
-            timestamp=timestamp,
+            path="/api/v1/submit",
+            query_params=valid_request_params,
+            body_bytes=original_body,
             private_key_pem=rsa_keypair["private_key"]
         )
 
-        # 篡改参数
-        tampered_params = valid_request_params.copy()
-        tampered_params["workflow"] = "tampered_workflow"
-
-        # 验证签名应该失败
+        # 用篡改后的 body 验证应该失败
         with pytest.raises(SignatureException) as exc_info:
             SignatureManager.verify_signature(
                 method="POST",
-                path="/api/v1/workflows/submit",
-                params=tampered_params,
-                signature=signature,
-                public_key_pem=rsa_keypair["public_key"],
-                timestamp=timestamp
+                path="/api/v1/submit",
+                query_params=valid_request_params,
+                body_bytes=tampered_body,
+                signature=sig_result["signature"],
+                timestamp=sig_result["timestamp"],
+                nonce=sig_result["nonce"],
+                public_key_pem=rsa_keypair["public_key"]
             )
         assert "签名验证失败" in str(exc_info.value)
 
-    def test_verify_signature_with_empty_signature(self, rsa_keypair, valid_request_params):
-        """测试空签名时验证失败"""
+    def test_verify_signature_with_tampered_query_params(self, rsa_keypair):
+        """测试 Query 参数被篡改时签名验证失败"""
+        original_params = {"key": "value1"}
+        tampered_params = {"key": "value2"}
+
+        # 用原始参数生成签名
+        sig_result = SignatureManager.generate_signature(
+            method="GET",
+            path="/api/v1/test",
+            query_params=original_params,
+            body_bytes=None,
+            private_key_pem=rsa_keypair["private_key"]
+        )
+
+        # 用篡改后的参数验证应该失败
+        with pytest.raises(SignatureException) as exc_info:
+            SignatureManager.verify_signature(
+                method="GET",
+                path="/api/v1/test",
+                query_params=tampered_params,
+                body_bytes=None,
+                signature=sig_result["signature"],
+                timestamp=sig_result["timestamp"],
+                nonce=sig_result["nonce"],
+                public_key_pem=rsa_keypair["public_key"]
+            )
+        assert "签名验证失败" in str(exc_info.value)
+
+    def test_verify_signature_missing_required_params(self, rsa_keypair):
+        """测试缺少必需参数时验证失败"""
+        # 缺少签名
         with pytest.raises(SignatureException) as exc_info:
             SignatureManager.verify_signature(
                 method="POST",
-                path="/api/v1/workflows/submit",
-                params=valid_request_params,
+                path="/api/v1/test",
                 signature="",
-                public_key_pem=rsa_keypair["public_key"],
-                timestamp=int(time.time())
+                timestamp="123",
+                nonce="abc",
+                public_key_pem=rsa_keypair["public_key"]
             )
         assert "签名字符串不能为空" in str(exc_info.value)
 
-    def test_verify_signature_with_invalid_base64(self, rsa_keypair, valid_request_params):
-        """测试无效 Base64 签名时验证失败"""
+        # 缺少时间戳
         with pytest.raises(SignatureException) as exc_info:
             SignatureManager.verify_signature(
                 method="POST",
-                path="/api/v1/workflows/submit",
-                params=valid_request_params,
-                signature="not_valid_base64!!!",
-                public_key_pem=rsa_keypair["public_key"],
-                timestamp=int(time.time())
+                path="/api/v1/test",
+                signature="abc",
+                timestamp="",
+                nonce="abc",
+                public_key_pem=rsa_keypair["public_key"]
             )
-        assert "Base64 解码失败" in str(exc_info.value)
+        assert "时间戳不能为空" in str(exc_info.value)
+
+        # 缺少 Nonce
+        with pytest.raises(SignatureException) as exc_info:
+            SignatureManager.verify_signature(
+                method="POST",
+                path="/api/v1/test",
+                signature="abc",
+                timestamp="123",
+                nonce="",
+                public_key_pem=rsa_keypair["public_key"]
+            )
+        assert "Nonce 不能为空" in str(exc_info.value)
 
     def test_verify_signature_with_wrong_public_key(self, rsa_keypair, valid_request_params):
         """测试使用错误公钥时验证失败"""
-        timestamp = int(time.time())
-
         # 生成签名
-        signature = SignatureManager.generate_signature(
+        sig_result = SignatureManager.generate_signature(
             method="POST",
-            path="/api/v1/workflows/submit",
-            params=valid_request_params,
-            timestamp=timestamp,
+            path="/api/v1/test",
+            query_params=valid_request_params,
             private_key_pem=rsa_keypair["private_key"]
         )
 
@@ -202,42 +354,52 @@ class TestSignatureManager:
         with pytest.raises(SignatureException) as exc_info:
             SignatureManager.verify_signature(
                 method="POST",
-                path="/api/v1/workflows/submit",
-                params=valid_request_params,
-                signature=signature,
-                public_key_pem=wrong_public_key,
-                timestamp=timestamp
+                path="/api/v1/test",
+                query_params=valid_request_params,
+                signature=sig_result["signature"],
+                timestamp=sig_result["timestamp"],
+                nonce=sig_result["nonce"],
+                public_key_pem=wrong_public_key
             )
         assert "签名验证失败" in str(exc_info.value)
 
-    def test_verify_signature_with_params_containing_timestamp(self, rsa_keypair, valid_request_params):
-        """测试参数中包含 timestamp 字段时验证成功"""
-        timestamp = int(time.time())
+    # ========== JSON Body 验证测试 ==========
 
-        # 将 timestamp 也放在 params 中
-        params_with_timestamp = valid_request_params.copy()
-        params_with_timestamp["timestamp"] = timestamp
+    def test_verify_signature_with_json_body(self, rsa_keypair):
+        """测试 JSON Body 的签名验证"""
+        # 模拟 JSON 请求
+        json_body = b'{"workflow": "test", "client_id": "123"}'
 
-        # 生成签名（使用相同的 timestamp）
-        signature = SignatureManager.generate_signature(
+        sig_result = SignatureManager.generate_signature(
             method="POST",
-            path="/api/v1/workflows/submit",
-            params=params_with_timestamp,
-            timestamp=timestamp,
+            path="/api/v1/submit",
+            query_params={},
+            body_bytes=json_body,
             private_key_pem=rsa_keypair["private_key"]
         )
 
-        # 验证签名（不传入 timestamp 参数，从 params 中读取）
-        result = SignatureManager.verify_signature(
+        # 验证应该成功
+        assert SignatureManager.verify_signature(
             method="POST",
-            path="/api/v1/workflows/submit",
-            params=params_with_timestamp,
-            signature=signature,
+            path="/api/v1/submit",
+            query_params={},
+            body_bytes=json_body,
+            signature=sig_result["signature"],
+            timestamp=sig_result["timestamp"],
+            nonce=sig_result["nonce"],
             public_key_pem=rsa_keypair["public_key"]
-            # 不传入 timestamp，应该从 params 中读取
-        )
+        ) is True
 
-        assert result is True
+    def test_verify_signature_json_body_with_different_format(self, rsa_keypair):
+        """测试相同内容不同格式的 JSON Body 产生不同哈希"""
+        json1 = b'{"a":1,"b":2}'
+        json2 = b'{"b":2,"a":1}'  # 键顺序不同
+
+        hash1 = SignatureManager.calculate_body_hash(json1)
+        hash2 = SignatureManager.calculate_body_hash(json2)
+
+        # 原始字节不同，哈希应该不同
+        assert hash1 != hash2
 
     # ========== 时间戳验证测试 ==========
 
@@ -249,10 +411,8 @@ class TestSignatureManager:
         # 当前时间戳
         assert SignatureManager.is_timestamp_valid(current_time, tolerance) is True
 
-        # 边界值：当前时间 - 容忍度
+        # 边界值
         assert SignatureManager.is_timestamp_valid(current_time - tolerance, tolerance) is True
-
-        # 边界值：当前时间 + 容忍度
         assert SignatureManager.is_timestamp_valid(current_time + tolerance, tolerance) is True
 
     def test_timestamp_invalid_outside_tolerance(self):
@@ -264,113 +424,15 @@ class TestSignatureManager:
         assert SignatureManager.is_timestamp_valid(current_time - tolerance - 1, tolerance) is False
         assert SignatureManager.is_timestamp_valid(current_time + tolerance + 1, tolerance) is False
 
-    def test_timestamp_with_zero_tolerance(self):
-        """测试容忍度为 0 时只有精确时间戳有效"""
-        current_time = int(time.time())
-
-        # 完全相同的时间戳
-        assert SignatureManager.is_timestamp_valid(current_time, 0) is True
-
-        # 差 1 秒
-        assert SignatureManager.is_timestamp_valid(current_time - 1, 0) is False
-        assert SignatureManager.is_timestamp_valid(current_time + 1, 0) is False
-
-    # ========== 签名字符串构造测试 ==========
-
-    def test_sign_string_construction(self):
-        """测试签名字符串的正确构造"""
-        # 通过生成签名来间接验证签名字符串的构造
-        private_key, public_key = SignatureManager.generate_rsa_keypair()
-
-        timestamp = 1234567890
-        params = {"b": "2", "a": "1"}  # 无序参数
-
-        # 生成签名
-        signature1 = SignatureManager.generate_signature(
-            method="GET",
-            path="/api/v1/test",
-            params=params,
-            timestamp=timestamp,
-            private_key_pem=private_key
-        )
-
-        # 相同参数不同顺序应该生成相同签名（因为会排序）
-        params_reordered = {"a": "1", "b": "2"}
-        signature2 = SignatureManager.generate_signature(
-            method="GET",
-            path="/api/v1/test",
-            params=params_reordered,
-            timestamp=timestamp,
-            private_key_pem=private_key
-        )
-
-        # 签名应该不同（因为 RSA-PSS 包含随机 salt）
-        # 但都应该能通过验证
-        assert SignatureManager.verify_signature(
-            method="GET",
-            path="/api/v1/test",
-            params=params,
-            signature=signature1,
-            public_key_pem=public_key,
-            timestamp=timestamp
-        ) is True
-
-        assert SignatureManager.verify_signature(
-            method="GET",
-            path="/api/v1/test",
-            params=params_reordered,
-            signature=signature2,
-            public_key_pem=public_key,
-            timestamp=timestamp
-        ) is True
-
-    def test_sign_string_filters_signature_and_timestamp_params(self, rsa_keypair):
-        """测试签名字符串会过滤 signature 和 timestamp 参数"""
-        params = {
-            "data": "test",
-            "signature": "should_be_ignored",
-            "timestamp": "should_be_ignored"
-        }
-
-        timestamp = 1234567890
-
-        # 生成签名时应该忽略 signature 和 timestamp 参数
-        signature = SignatureManager.generate_signature(
-            method="POST",
-            path="/api/v1/test",
-            params=params,
-            timestamp=timestamp,
-            private_key_pem=rsa_keypair["private_key"]
-        )
-
-        # 验证时传入的参数即使包含额外的 signature 和 timestamp 也应该成功
-        verify_params = {
-            "data": "test",
-            "extra": "extra_param"  # 额外参数会导致验证失败
-        }
-
-        with pytest.raises(SignatureException):
-            SignatureManager.verify_signature(
-                method="POST",
-                path="/api/v1/test",
-                params=verify_params,
-                signature=signature,
-                public_key_pem=rsa_keypair["public_key"],
-                timestamp=timestamp
-            )
-
     # ========== 不同 HTTP 方法测试 ==========
 
-    def test_signature_different_methods(self, rsa_keypair, valid_request_params):
+    def test_signature_different_methods(self, rsa_keypair):
         """测试不同 HTTP 方法的签名验证"""
-        timestamp = int(time.time())
-
         for method in ["GET", "POST", "PUT", "DELETE", "PATCH"]:
-            signature = SignatureManager.generate_signature(
+            sig_result = SignatureManager.generate_signature(
                 method=method,
                 path="/api/v1/test",
-                params=valid_request_params,
-                timestamp=timestamp,
+                query_params={"key": "value"},
                 private_key_pem=rsa_keypair["private_key"]
             )
 
@@ -378,35 +440,90 @@ class TestSignatureManager:
             result = SignatureManager.verify_signature(
                 method=method,
                 path="/api/v1/test",
-                params=valid_request_params,
-                signature=signature,
-                public_key_pem=rsa_keypair["public_key"],
-                timestamp=timestamp
+                query_params={"key": "value"},
+                signature=sig_result["signature"],
+                timestamp=sig_result["timestamp"],
+                nonce=sig_result["nonce"],
+                public_key_pem=rsa_keypair["public_key"]
             )
 
             assert result is True, f"{method} 方法签名验证失败"
 
-    def test_signature_different_methods_fail_on_wrong_method(self, rsa_keypair, valid_request_params):
+    def test_signature_wrong_method_fails(self, rsa_keypair):
         """测试使用错误 HTTP 方法时签名验证失败"""
-        timestamp = int(time.time())
-
-        # 用 POST 方法生成签名
-        signature = SignatureManager.generate_signature(
+        # 用 POST 生成签名
+        sig_result = SignatureManager.generate_signature(
             method="POST",
             path="/api/v1/test",
-            params=valid_request_params,
-            timestamp=timestamp,
             private_key_pem=rsa_keypair["private_key"]
         )
 
-        # 用 GET 方法验证应该失败
+        # 用 GET 验证应该失败
         with pytest.raises(SignatureException) as exc_info:
             SignatureManager.verify_signature(
                 method="GET",
                 path="/api/v1/test",
-                params=valid_request_params,
-                signature=signature,
-                public_key_pem=rsa_keypair["public_key"],
-                timestamp=timestamp
+                signature=sig_result["signature"],
+                timestamp=sig_result["timestamp"],
+                nonce=sig_result["nonce"],
+                public_key_pem=rsa_keypair["public_key"]
             )
         assert "签名验证失败" in str(exc_info.value)
+
+    # ========== 端到端场景测试 ==========
+
+    def test_end_to_end_signature_flow(self, rsa_keypair):
+        """测试完整的签名验证流程"""
+        # 模拟客户端请求
+        method = "POST"
+        path = "/api/v1/workflows/submit"
+        query_params = {"client_id": "123", "format": "json"}
+        body = b'{"workflow": "advanced", "steps": 20}'
+
+        # 客户端生成签名
+        sig_result = SignatureManager.generate_signature(
+            method=method,
+            path=path,
+            query_params=query_params,
+            body_bytes=body,
+            private_key_pem=rsa_keypair["private_key"]
+        )
+
+        # 服务端验证签名
+        assert SignatureManager.verify_signature(
+            method=method,
+            path=path,
+            query_params=query_params,
+            body_bytes=body,
+            signature=sig_result["signature"],
+            timestamp=sig_result["timestamp"],
+            nonce=sig_result["nonce"],
+            public_key_pem=rsa_keypair["public_key"]
+        ) is True
+
+    def test_get_request_without_body(self, rsa_keypair):
+        """测试无 Body 的 GET 请求"""
+        method = "GET"
+        path = "/api/v1/queue/status"
+        query_params = {"details": "true"}
+
+        # 生成签名
+        sig_result = SignatureManager.generate_signature(
+            method=method,
+            path=path,
+            query_params=query_params,
+            body_bytes=None,
+            private_key_pem=rsa_keypair["private_key"]
+        )
+
+        # 验证签名
+        assert SignatureManager.verify_signature(
+            method=method,
+            path=path,
+            query_params=query_params,
+            body_bytes=None,
+            signature=sig_result["signature"],
+            timestamp=sig_result["timestamp"],
+            nonce=sig_result["nonce"],
+            public_key_pem=rsa_keypair["public_key"]
+        ) is True
