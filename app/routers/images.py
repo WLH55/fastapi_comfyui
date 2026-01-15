@@ -34,13 +34,9 @@ async def upload_image(
     save_file(content, file.filename, settings.INPUT_DIR)
 
     # 上传到 ComfyUI
-    result = await comfyui_client.upload_image(content, file.filename, overwrite)
+    await comfyui_client.upload_image(content, file.filename, overwrite)
 
     return ApiResponse.success(
-        data={
-            "filename": file.filename,
-            "name": result.get("name", file.filename)
-        },
         message="上传成功"
     )
 

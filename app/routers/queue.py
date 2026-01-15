@@ -53,7 +53,7 @@ async def get_queue_status() -> ApiResponse:
     )
 
 
-@router.post("/clear", summary="清空队列", response_model=ApiResponse)
+@router.get("/clear", summary="清空队列", response_model=ApiResponse)
 async def clear_queue() -> ApiResponse:
     """
     清空整个队列

@@ -39,7 +39,7 @@ async def submit_workflow(request: Dict[str, Any]) -> ApiResponse:
     )
 
 
-@router.get("/{prompt_id}/history", summary="获取工作流历史", response_model=ApiResponse)
+@router.get("/history", summary="获取工作流历史", response_model=ApiResponse)
 async def get_history(prompt_id: str) -> ApiResponse:
     """获取工作流执行历史"""
     history = await comfyui_client.get_history(prompt_id)

@@ -47,13 +47,22 @@ class Settings(BaseSettings):
     BASE_DIR: Path = Path(__file__).resolve().parent.parent
     INPUT_DIR: Path = BASE_DIR / "input"
     OUTPUT_DIR: Path = BASE_DIR / "output"
+    STORAGE_DIR: Path = BASE_DIR / "storage"
+    LOGS_DIR: Path = STORAGE_DIR / "logs"
+    ACCESS_LOG_DIR: Path = LOGS_DIR / "access"
 
 
 
     # ========== 签名验签配置 ==========
-    SIGNATURE_ENABLED: bool = True  # 签名验证总开关
-    SIGNATURE_PUBLIC_KEY: str = ""  # RSA 公钥（PEM 格式）
+    SIGNATURE_ENABLED: bool = False  # 签名验证总开关
+    APP_SECRET: str = ""  # 签名密钥（HMAC-SHA256）
     SIGNATURE_TIMESTAMP_TOLERANCE: int = 300  # 时间戳容忍度（秒），默认 5 分钟
+
+    # ========== 日志配置 ==========
+    LOG_LEVEL: str = "INFO"  # 日志级别：DEBUG, INFO, WARNING, ERROR, CRITICAL
+    LOG_RETENTION_DAYS: int = 7  # 日志保留天数
+    LOG_MAX_BYTES: int = 10 * 1024 * 1024  # 单个日志文件最大大小（10MB）
+    LOG_BACKUP_COUNT: int = 30  # 保留的日志文件数量
 
     class Config:
         """Pydantic 配置"""
@@ -68,3 +77,4 @@ def ensure_directories():
     """确保必要的目录存在"""
     settings.INPUT_DIR.mkdir(parents=True, exist_ok=True)
     settings.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    settings.ACCESS_LOG_DIR.mkdir(parents=True, exist_ok=True)

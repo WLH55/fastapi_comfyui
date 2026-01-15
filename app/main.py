@@ -3,10 +3,13 @@ FastAPI 应用主入口
 """
 
 from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+
 from app.config import settings, ensure_directories
+from app.logger_config import setup_logging
 from app.routers import (
     workflows_router,
     queue_router,
@@ -16,14 +19,18 @@ from app.routers import (
 from app.exceptions import register_exception_handlers
 
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
     ensure_directories()
+    setup_logging()  # 初始化日志系统
     print(f"[START] {settings.APP_NAME} v{settings.APP_VERSION}")
     print(f"[COMFYUI] {settings.COMFYUI_BASE_URL}")
+    print(f"[LOGS] 访问日志目录: {settings.ACCESS_LOG_DIR}")
     yield
     print(f"[STOP] {settings.APP_NAME} shutdown")
+
 
 
 def create_app() -> FastAPI:

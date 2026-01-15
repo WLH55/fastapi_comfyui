@@ -44,7 +44,9 @@ env/
 
 # 日志
 logs/
+storage/logs/
 *.log
+*.log.gz
 
 # 测试
 .pytest_cache/

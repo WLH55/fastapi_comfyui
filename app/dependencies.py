@@ -12,9 +12,8 @@ from app.internal.signature import SignatureManager, SignatureException
 
 async def verify_signature(
     request: Request,
-    x_signature: str = Header(..., description="RSA 签名字符串"),
-    x_timestamp: str = Header(..., description="请求时间戳（秒）"),
-    x_nonce: str = Header(..., description="随机字符串")
+    x_timestamp: str | None = Header(None,description="请求时间戳（秒）"),
+    x_signature: str | None = Header(None,description="HMAC-SHA256 签名")
 ) -> None:
     """
     签名验证依赖
@@ -22,15 +21,13 @@ async def verify_signature(
     从 HTTP Header 中读取签名参数并验证，防止参数篡改和重放攻击
 
     Header 参数：
-        X-Signature: Base64 编码的 RSA 签名
         X-Timestamp: Unix 时间戳（秒）
-        X-Nonce: 随机字符串（防止重放）
+        X-Signature: HMAC-SHA256 签名
 
     Args:
         request: FastAPI 请求对象
-        x_signature: Header 中的签名字符串
         x_timestamp: Header 中的时间戳
-        x_nonce: Header 中的随机字符串
+        x_signature: Header 中的签名字符串
 
     Raises:
         HTTPException: 签名验证失败时抛出 401 错误
@@ -46,11 +43,11 @@ async def verify_signature(
     if not settings.SIGNATURE_ENABLED:
         return
 
-    # 检查公钥配置
-    if not settings.SIGNATURE_PUBLIC_KEY:
+    # 检查密钥配置
+    if not settings.APP_SECRET:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="服务器签名配置错误：公钥未配置"
+            detail="服务器配置错误：签名密钥未配置"
         )
 
     try:
@@ -58,34 +55,16 @@ async def verify_signature(
         method = request.method
         path = request.url.path
 
-        # 获取 Query 参数
-        query_params = dict(request.query_params)
-
-        # 获取请求体原始字节
-        body_bytes = await request.body()
-
-        # 执行签名验证
-        SignatureManager.verify_signature(
-            method=method,
-            path=path,
-            query_params=query_params,
-            body_bytes=body_bytes,
-            signature=x_signature,
-            timestamp=x_timestamp,
-            nonce=x_nonce,
-            public_key_pem=settings.SIGNATURE_PUBLIC_KEY
-        )
-
         # 验证时间戳（防重放攻击）
-        if settings.SIGNATURE_TIMESTAMP_TOLERANCE > 0:
-            try:
-                timestamp_int = int(x_timestamp)
-            except ValueError:
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="时间戳格式无效"
-                )
+        try:
+            timestamp_int = int(x_timestamp)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="时间戳格式无效"
+            )
 
+        if settings.SIGNATURE_TIMESTAMP_TOLERANCE > 0:
             if not SignatureManager.is_timestamp_valid(
                 timestamp_int,
                 settings.SIGNATURE_TIMESTAMP_TOLERANCE
@@ -94,6 +73,15 @@ async def verify_signature(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail=f"请求时间戳过期，允许时间差: {settings.SIGNATURE_TIMESTAMP_TOLERANCE} 秒"
                 )
+
+        # 执行签名验证
+        SignatureManager.verify_signature(
+            method=method,
+            path=path,
+            signature=x_signature,
+            timestamp=x_timestamp,
+            secret=settings.APP_SECRET
+        )
 
     except SignatureException as e:
         raise HTTPException(
